@@ -1,78 +1,79 @@
-((window) => {
+(function () {
   if (!window.extensionsAPI) {
-    console.error("[Metrics Extension] ArgoExtensionAPI não encontrado!");
+    console.error("[Metrics Extension] API não encontrada, aguardando...");
+    setTimeout(arguments.callee, 2000);
     return;
   }
 
-  console.log("[Metrics Extension] Registrando aba de métricas...");
+  console.log("[Metrics Extension] Registrando aba Metrics...");
 
   const MetricsTab = (props) => {
     const e = React.createElement;
-    const [data, setData] = React.useState({ cpu: "0", memory: "0" });
-    const [loading, setLoading] = React.useState(true);
-    const [error, setError] = React.useState(null);
+    const appName = props?.application?.metadata?.name || "unknown";
+    const resources = props?.tree?.nodes || [];
+    const [metrics, setMetrics] = React.useState(null);
+    const [loading, setLoading] = React.useState(false);
 
-    // 🧠 URL do Prometheus — altere conforme seu ambiente
-    // Se o ArgoCD estiver dentro do cluster kind, use:
-    const PROM_URL = "http://localhost:9090/api/v1/query";
+    // 🔍 procura Deployment dentro da árvore da Application
+    const deploymentNode = resources.find((r) => r.kind === "Deployment");
+    const deploymentName = deploymentNode?.name;
+    const namespace = deploymentNode?.namespace || props?.application?.metadata?.namespace || "default";
 
-    // Nome da Application (vem do Argo)
-    const appName = props?.application?.metadata?.name;
+    const PROM_URL = "http://localhost:9090/api/v1/query"; // 🔸 ou use o NodePort
 
-    // Queries PromQL
-    const queries = {
-      cpu: `sum(rate(container_cpu_usage_seconds_total{namespace="argocd",pod=~"${appName}.*"}[5m]))`,
-      memory: `sum(container_memory_usage_bytes{namespace="argocd",pod=~"${appName}.*"}) / (1024*1024)`,
-    };
+    const fetchMetrics = async () => {
+      if (!deploymentName) return;
+      setLoading(true);
 
-    // Função que busca métricas do Prometheus
-    async function fetchMetrics() {
       try {
-        setLoading(true);
-        const [cpuResp, memResp] = await Promise.all([
-          fetch(`${PROM_URL}?query=${encodeURIComponent(queries.cpu)}`),
-          fetch(`${PROM_URL}?query=${encodeURIComponent(queries.memory)}`),
+        // 🔹 Busca os pods que pertencem ao deployment (prefixo do nome)
+        const podPrefix = deploymentName;
+
+        // CPU e Memória por pod
+        const cpuQuery = `sum(rate(container_cpu_usage_seconds_total{namespace="${namespace}", pod=~"${podPrefix}.*"}[5m]))`;
+        const memQuery = `sum(container_memory_usage_bytes{namespace="${namespace}", pod=~"${podPrefix}.*"})`;
+
+        const [cpuRes, memRes] = await Promise.all([
+          fetch(`${PROM_URL}?query=${encodeURIComponent(cpuQuery)}`).then((r) => r.json()),
+          fetch(`${PROM_URL}?query=${encodeURIComponent(memQuery)}`).then((r) => r.json())
         ]);
 
-        const cpuData = await cpuResp.json();
-        const memData = await memResp.json();
-
-        setData({
-          cpu: cpuData.data?.result?.[0]?.value?.[1] || "0",
-          memory: memData.data?.result?.[0]?.value?.[1] || "0",
+        setMetrics({
+          cpu: cpuRes.data?.result?.[0]?.value?.[1] ?? "0",
+          mem: memRes.data?.result?.[0]?.value?.[1] ?? "0"
         });
       } catch (err) {
-        setError(err.message);
+        console.error("[Metrics Extension] Erro ao buscar métricas:", err);
       } finally {
         setLoading(false);
       }
-    }
+    };
 
     React.useEffect(() => {
       fetchMetrics();
-      const interval = setInterval(fetchMetrics, 10000);
-      return () => clearInterval(interval);
-    }, [appName]);
+    }, [deploymentName]);
 
-    if (loading) return e("p", {}, "⏳ Carregando métricas...");
-    if (error) return e("p", { style: { color: "red" } }, `Erro: ${error}`);
+    if (!deploymentName) {
+      return e("div", null, `Nenhum Deployment encontrado na aplicação ${appName}`);
+    }
+
+    if (loading) return e("div", null, "Carregando métricas do Prometheus...");
 
     return e("div", { style: { padding: "16px" } }, [
-      e("h2", { key: "title" }, `📊 Métricas de ${appName}`),
-      e("p", { key: "cpu" }, `CPU (5m média): ${Number(data.cpu).toFixed(3)} cores`),
-      e("p", { key: "mem" }, `Memória: ${Number(data.memory).toFixed(2)} MiB`),
-      e("small", { key: "note", style: { color: "#888" } }, "Atualiza a cada 10 segundos."),
+      e("h2", { key: "title" }, `📊 Métricas do Deployment: ${deploymentName}`),
+      metrics
+        ? e("ul", { key: "metrics" }, [
+            e("li", { key: "cpu" }, `CPU: ${parseFloat(metrics.cpu).toFixed(4)} cores`),
+            e("li", { key: "mem" }, `Memória: ${(metrics.mem / 1024 / 1024).toFixed(2)} MB`)
+          ])
+        : e("p", { key: "empty" }, "Nenhum dado encontrado no Prometheus.")
     ]);
   };
 
-  // Registra a aba no Argo CD
   window.extensionsAPI.registerResourceExtension(
     MetricsTab,
     "argoproj.io",
     "Application",
-    "Metrics",
-    { icon: "fa-chart-line" }
+    "Metrics"
   );
-
-  console.log("[Metrics Extension] ✅ Aba de métricas registrada com sucesso!");
-})(window);
+})();
