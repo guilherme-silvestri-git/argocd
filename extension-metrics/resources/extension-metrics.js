@@ -1,56 +1,55 @@
 (function () {
-  // ---- Carrega Recharts dinamicamente via CDN ----
   async function ensureRecharts() {
     if (window.Recharts) {
-      console.log("[Metrics Extension] Recharts já carregado.");
+      console.log("[Metrics Extension] Recharts já disponível.");
       return;
     }
 
-    console.log("[Metrics Extension] Carregando Recharts via CDN...");
+    console.log("[Metrics Extension] Carregando Recharts local...");
     const script = document.createElement("script");
-    script.src = "https://unpkg.com/recharts@2.12.1/umd/Recharts.min.js";
+    // ⚠️ O caminho aqui é RELATIVO ao /tmp/extensions/resources/
+    script.src = "extensions/resources/recharts.min.js";
+    script.type = "text/javascript";
+    script.onload = () => console.log("[Metrics Extension] Recharts carregado!");
+    script.onerror = (err) => console.error("[Metrics Extension] Falha ao carregar Recharts local", err);
     document.head.appendChild(script);
 
-    await new Promise((resolve, reject) => {
-      script.onload = resolve;
-      script.onerror = () => reject("Falha ao carregar Recharts via CDN");
+    await new Promise((resolve) => {
+      const check = setInterval(() => {
+        if (window.Recharts) {
+          clearInterval(check);
+          resolve();
+        }
+      }, 500);
     });
   }
 
-  // ---- Inicializa a extensão ----
   async function init() {
     await ensureRecharts();
 
     if (!window.extensionsAPI) {
-      console.warn("[Metrics Extension] extensionsAPI ainda não disponível, tentando novamente...");
-      setTimeout(init, 2000);
+      console.log("[Metrics Extension] Esperando extensionsAPI...");
+      setTimeout(init, 1500);
       return;
     }
 
-    console.log("[Metrics Extension] Registrando aba Metrics com gráficos...");
+    console.log("[Metrics Extension] Registrando aba Metrics...");
 
     const MetricsTab = (props) => {
       const e = React.createElement;
-      const appName = props?.application?.metadata?.name || "unknown";
       const resources = props?.tree?.nodes || [];
       const [metrics, setMetrics] = React.useState({});
-      const [loading, setLoading] = React.useState(false);
       const [error, setError] = React.useState(null);
 
       const deploymentNode = resources.find((r) => r.kind === "Deployment");
       const deploymentName = deploymentNode?.name;
-      const namespace = deploymentNode?.namespace || props?.application?.metadata?.namespace || "default";
+      const namespace = deploymentNode?.namespace || "default";
 
-      // 🔹 Endpoint Prometheus local (ajuste se estiver fora do Kind)
       const PROM_URL = "http://localhost:9090/api/v1/query_range";
-      const RANGE = 600; // 10 min
-      const STEP = 30;   // intervalo 30s
+      const RANGE = 600;
+      const STEP = 30;
 
       const fetchMetrics = async () => {
-        if (!deploymentName) return;
-        setLoading(true);
-        setError(null);
-
         try {
           const podRegex = `${deploymentName}.*`;
           const end = Math.floor(Date.now() / 1000);
@@ -61,67 +60,55 @@
             mem: `sum(container_memory_usage_bytes{namespace="${namespace}",pod=~"${podRegex}"})`,
             net_rx: `sum(rate(container_network_receive_bytes_total{namespace="${namespace}",pod=~"${podRegex}"}[2m]))`,
             net_tx: `sum(rate(container_network_transmit_bytes_total{namespace="${namespace}",pod=~"${podRegex}"}[2m]))`,
-            fs_write: `sum(rate(container_fs_writes_bytes_total{namespace="${namespace}",pod=~"${podRegex}"}[2m]))`
           };
 
           const results = {};
           for (const [key, query] of Object.entries(queries)) {
-            const url = `${PROM_URL}?query=${encodeURIComponent(query)}&start=${start}&end=${end}&step=${STEP}`;
-            const res = await fetch(url);
+            const res = await fetch(`${PROM_URL}?query=${encodeURIComponent(query)}&start=${start}&end=${end}&step=${STEP}`);
             const json = await res.json();
             results[key] = json.data?.result?.[0]?.values?.map(([t, v]) => ({
               time: new Date(t * 1000).toLocaleTimeString(),
-              value: parseFloat(v)
+              value: parseFloat(v),
             })) ?? [];
           }
-
           setMetrics(results);
         } catch (err) {
-          setError(err.message);
           console.error("[Metrics Extension] Erro ao buscar métricas:", err);
-        } finally {
-          setLoading(false);
+          setError(err.message);
         }
       };
 
       React.useEffect(() => {
         fetchMetrics();
-        const interval = setInterval(fetchMetrics, 10000);
-        return () => clearInterval(interval);
+        const i = setInterval(fetchMetrics, 10000);
+        return () => clearInterval(i);
       }, [deploymentName]);
 
-      // ---- Recharts Components ----
-      const { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend, ResponsiveContainer } = window.Recharts;
+      const { LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, ResponsiveContainer } = window.Recharts || {};
 
-      if (!deploymentName)
-        return e("div", null, `Nenhum Deployment encontrado para ${appName}`);
-      if (loading && !Object.keys(metrics).length)
-        return e("div", null, "Carregando métricas do Prometheus...");
-      if (error)
-        return e("div", { style: { color: "red" } }, `Erro: ${error}`);
+      if (!deploymentName) return e("div", null, "Nenhum Deployment encontrado.");
+      if (error) return e("div", { style: { color: "red" } }, error);
 
-      const chart = (data, title, unit, color) =>
+      const chart = (data, title, color, unit) =>
         e("div", { key: title, style: { height: "250px", marginBottom: "30px" } }, [
           e("h3", { style: { color: "#00bcd4" } }, title),
           e(ResponsiveContainer, { width: "100%", height: 200 },
             e(LineChart, { data },
               e(CartesianGrid, { strokeDasharray: "3 3" }),
               e(XAxis, { dataKey: "time", hide: true }),
-              e(YAxis, { domain: ["auto", "auto"], tickFormatter: (v) => `${v.toFixed(2)}` }),
+              e(YAxis, { domain: ["auto", "auto"] }),
               e(Tooltip, { formatter: (v) => `${v.toFixed(2)} ${unit}` }),
-              e(Legend),
               e(Line, { type: "monotone", dataKey: "value", stroke: color, dot: false })
             )
           )
         ]);
 
       return e("div", { style: { padding: "16px" } }, [
-        e("h2", { key: "title" }, `📊 Métricas do Deployment: ${deploymentName}`),
-        chart(metrics.cpu, "Uso de CPU (cores)", "cores", "#f44336"),
-        chart(metrics.mem, "Uso de Memória (bytes)", "B", "#2196f3"),
-        chart(metrics.net_rx, "Rede RX (bytes/s)", "B/s", "#4caf50"),
-        chart(metrics.net_tx, "Rede TX (bytes/s)", "B/s", "#ff9800"),
-        chart(metrics.fs_write, "Escrita em Disco (bytes/s)", "B/s", "#9c27b0")
+        e("h2", null, `📊 Métricas de ${deploymentName}`),
+        chart(metrics.cpu, "CPU (cores)", "#f44336", "cores"),
+        chart(metrics.mem, "Memória (bytes)", "#2196f3", "B"),
+        chart(metrics.net_rx, "Rede RX (bytes/s)", "#4caf50", "B/s"),
+        chart(metrics.net_tx, "Rede TX (bytes/s)", "#ff9800", "B/s"),
       ]);
     };
 
@@ -132,7 +119,7 @@
       "Metrics"
     );
 
-    console.log("[Metrics Extension] ✅ Registrada com gráficos!");
+    console.log("[Metrics Extension] ✅ Registrada com gráficos locais!");
   }
 
   init();
