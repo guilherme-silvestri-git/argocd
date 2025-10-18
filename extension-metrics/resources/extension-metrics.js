@@ -14,7 +14,7 @@
 
     // 🧠 URL do Prometheus — altere conforme seu ambiente
     // Se o ArgoCD estiver dentro do cluster kind, use:
-    const PROM_URL = "http://prometheus-operated.monitoring.svc.cluster.local:9090/api/v1/query";
+    const PROM_URL = "http://localhost:9090/api/v1/query";
 
     // Nome da Application (vem do Argo)
     const appName = props?.application?.metadata?.name;
