@@ -18,7 +18,6 @@
     const namespace = deploymentNode?.namespace || props?.application?.metadata?.namespace || "default";
 
     // --- Configuração do Proxy Prometheus ---
-    // Usando o endpoint seguro exposto pelo ArgoCD API server
     const PROM_QUERY_RANGE = "/extensions/prometheus/api/v1/query_range";
     const PROM_QUERY = "/extensions/prometheus/api/v1/query";
     const RANGE = 10 * 60; // 10 minutos
@@ -48,15 +47,28 @@
       const start = end - RANGE;
       const url = `${PROM_QUERY_RANGE}?query=${encodeURIComponent(query)}&start=${start}&end=${end}&step=${STEP}`;
 
+      const appNamespace = props?.application?.metadata?.namespace || "default";
+      const appName = props?.application?.metadata?.name || "unknown";
+      const projectName = props?.application?.spec?.project || "default";
+
       const res = await fetch(url, {
-        credentials: "include", // importante para o cookie do ArgoCD
+        credentials: "include", // envia o cookie argocd.token automaticamente
         headers: {
-          "Content-Type": "application/json"
+          "Content-Type": "application/json",
+          "Argocd-Application-Name": `${appNamespace}:${appName}`,
+          "Argocd-Project-Name": projectName
         }
       });
 
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("[Metrics Extension] Resposta inválida:", text.slice(0, 200));
+        throw new Error(`HTTP ${res.status}: ${text}`);
+      }
+
       const json = await res.json();
       if (json.status !== "success") throw new Error(json.error || "Falha na query Prometheus");
+
       const values = json.data?.result?.[0]?.values || [];
       return values.map(([t, v]) => ({
         time: new Date(t * 1000).toLocaleTimeString(),
@@ -148,7 +160,7 @@
     ]);
   };
 
-  // --- Registro ---
+  // --- Registro da extensão ---
   window.extensionsAPI.registerResourceExtension(
     MetricsTab,
     "argoproj.io",
