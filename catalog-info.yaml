@@ -1,0 +1,12 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: payment-api
+  annotations:
+    k6.io/enabled: "true"
+    k6.io/default-url: "https://api.payment.dev/health"
+    k6.io/namespace: "k6-tests"
+spec:
+  type: service
+  lifecycle: development
+  owner: team-payments
